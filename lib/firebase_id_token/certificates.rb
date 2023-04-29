@@ -38,6 +38,8 @@ module FirebaseIdToken
     # Google's x509 certificates API URL.
     URL = 'https://www.googleapis.com/robot/v1/metadata/x509/'\
       'securetoken@system.gserviceaccount.com'
+    
+    COOKIE_URL = 'https://www.googleapis.com/identitytoolkit/v3/relyingparty/publicKeys'
 
     # Calls {.request!} only if there are no certificates on Redis. It will
     # return `nil` otherwise.
@@ -167,6 +169,17 @@ module FirebaseIdToken
     # @see Certificates.request!
     def request!
       @request = HTTParty.get URL
+      code = @request.code
+      if code == 200
+        save_certificates
+      else
+        raise Exceptions::CertificatesRequestError.new(code)
+      end
+    end
+    
+    
+    def cookie_request!
+      @request = HTTParty.get COOKIE_URL
       code = @request.code
       if code == 200
         save_certificates
