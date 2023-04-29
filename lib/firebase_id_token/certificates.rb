@@ -67,6 +67,10 @@ module FirebaseIdToken
     def self.request!
       new.request!
     end
+    
+    def self.cookie_request!
+      new.cookie_request!
+    end
 
     # @deprecated Use only `request!` in favor of Ruby conventions.
     # It will raise a warning. Kept for compatibility.
