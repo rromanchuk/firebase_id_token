@@ -1,12 +1,12 @@
-# Ruby Firebase ID Token verifier (pre-release)
+# Ruby Firebase ID Token verifier
 
-![Alt text](https://api.travis-ci.org/fschuindt/firebase_id_token.svg?branch=master)
+[![Actions Status](https://github.com/fschuindt/firebase_id_token/workflows/Test/badge.svg?branch=master)](https://github.com/fschuindt/firebase_id_token/actions?query=workflow%3ATest)
+[![Test Coverage](https://codeclimate.com/github/fschuindt/firebase_id_token/badges/coverage.svg)](https://codeclimate.com/github/fschuindt/firebase_id_token/coverage)
 [![Code Climate](https://codeclimate.com/github/fschuindt/firebase_id_token/badges/gpa.svg)](https://codeclimate.com/github/fschuindt/firebase_id_token)
 [![Issue Count](https://codeclimate.com/github/fschuindt/firebase_id_token/badges/issue_count.svg)](https://codeclimate.com/github/fschuindt/firebase_id_token)
-[![Test Coverage](https://codeclimate.com/github/fschuindt/firebase_id_token/badges/coverage.svg)](https://codeclimate.com/github/fschuindt/firebase_id_token/coverage)
 [![Inline docs](http://inch-ci.org/github/fschuindt/firebase_id_token.svg?branch=master)](http://inch-ci.org/github/fschuindt/firebase_id_token)
 
-A Ruby gem to verify the signature of Firebase ID Tokens. It uses Redis to store Google's x509 certificates and manage their expiration time, so you don't need to request Google's API in every execution and can access it as fast as reading from memory.
+A Ruby gem to verify the signature of Firebase ID Tokens (JWT). It uses Redis to store Google's x509 certificates and manage their expiration time, so you don't need to request Google's API in every execution and can access it as fast as reading from memory.
 
 It also checks the JWT payload parameters as recommended [here](https://firebase.google.com/docs/auth/admin/verify-id-tokens) by Firebase official documentation.
 
@@ -29,7 +29,7 @@ gem install firebase_id_token
 
 or in your Gemfile
 ```
-gem 'firebase_id_token', '~> 2.5.1'
+gem 'firebase_id_token', '~> 3.0.0'
 ```
 then
 ```
@@ -43,24 +43,15 @@ It's needed to set up your Firebase Project ID.
 If you are using Rails, this should probably go into `config/initializers/firebase_id_token.rb`.
 ```ruby
 FirebaseIdToken.configure do |config|
+  config.redis = Redis.new
   config.project_ids = ['your-firebase-project-id']
 end
 ```
 
-`project_ids` must be a Array.
+- `redis` with a `Redis` instance must be supplied. You can configure your Redis details here. Example: `Redis.new(host: '10.0.1.1', port: 6380, db: 15)`.
+- `project_ids` must be an Array.
 
 *If you want to verify signatures from more than one Firebase project, just add more Project IDs to the list.*
-
-You can also pass a Redis instance to `config` if you are not using Redis defaults.  
-In this case, you must have the gem `redis` in your `Gemfile`.
-```ruby
-FirebaseIdToken.configure do |config|
-  config.project_ids = ['your-firebase-project-id']
-  config.redis = Redis.new(host: '10.0.1.1', port: 6380, db: 15)
-end
-```
-
-Otherwise, it will use just `Redis.new` as the instance.
 
 ## Usage
 
@@ -71,21 +62,21 @@ really helpful. But here is a complete guide:
 
 Before verifying tokens, you need to download Google's x509 certificates.
 
-To do it simply:
+To do it, simply:
 ```ruby
 FirebaseIdToken::Certificates.request
 ```
 
-It will download the certificates and save it in Redis, but only if Redis certificates database is empty. To force download and override Redis database, use:
+It will download the certificates and save it in Redis, but only if the Redis certificates database is empty. To force download and override of the Redis database, use:
 ```ruby
 FirebaseIdToken::Certificates.request!
 ```
 
-Google give us information about the certificates expiration time, it's used to set a Redis TTL (Time-To-Live) when saving it. By doing so, the certificates will be automatically deleted after its expiration.
+Google give us information about the certificates' expiration time, it's used to set a Redis TTL (Time-To-Live) when saving it. By doing so, the certificates will be automatically deleted after its expiration.
 
 #### Certificates Info
 
-Checks the presence of certificates in Redis database.
+Checks the presence of certificates in the Redis database.
 ```ruby
 FirebaseIdToken::Certificates.present?
 => true
@@ -97,13 +88,13 @@ FirebaseIdToken::Certificates.ttl
 => 22352
 ```
 
-Lists all certificates in a database.
+Lists all certificates in the database.
 ```ruby
 FirebaseIdToken::Certificates.all
 => [{"ec8f292sd30224afac5c55540df66d1f999d" => <OpenSSL::X509::Certificate: [...]]
 ```
 
-Finds the respective certificate of a given Key ID.
+Finds the respective certificate of a given Key ID (`kid`).
 ```ruby
 FirebaseIdToken::Certificates.find('ec8f292sd30224afac5c55540df66d1f999d')
 => <OpenSSL::X509::Certificate: subject=<OpenSSL::X509 [...]>
@@ -153,7 +144,7 @@ When developing, you should just run the task:
 $ rake firebase:certificates:request
 ```
 
-*And remember, you need the Redis server to be running.*
+*You need Redis to be running.*
 
 ### Verifying Tokens
 
@@ -173,22 +164,42 @@ FirebaseIdToken::Signature.verify('aaaaaa')
 => nil
 ```
 
-**WARNING:** If you try to verify a signature without any certificates in Redis database it will raise a `FirebaseIdToken::Exceptions::NoCertificatesError`.
+#### WARNING!
+
+##### Expired tokens can point to long gone certificates
+
+Notice that often when the token have expired, the Firebase certificate can be already missing from the Firebase servers. In these cases, `verify` will return `nil`.
+
+If you want to take specific actions in such cases, here's a solution suggested by the user [cfanpnk](https://github.com/fschuindt/firebase_id_token/issues/29#issuecomment-751137511):
+
+1. Use `verify!` to raise an exception.
+2. Rescue `FirebaseIdToken::Exceptions::CertificateNotFound` and return `401`.
+3. The client app will refresh the token if expired.
+
+More details [here](https://github.com/fschuindt/firebase_id_token/issues/29).
+
+##### Trying to verify tokens without downloaded certificates will raise an error
+
+If you try to verify a signature without any certificates in Redis database, it will raise a `FirebaseIdToken::Exceptions::NoCertificatesError`.
+
+##### "I keep on getting `nil` on `verify`"
+
+Poorly synchronized clocks will sometimes make the server think the token's `iat` is on the future, which will render the token as invalid. Make sure your server's or development system's clock is correctly set. On macOS, some people reported success by unchecking and checking the "Set date and time automatically" configuration checkbox. See [here](https://github.com/fschuindt/firebase_id_token/issues/21#issuecomment-623133926).
 
 #### Payload Structure
 
 In case you need, here's a example of the payload structure from a Google login in JSON.
 ```json
 {  
-   "iss":"https://securetoken.google.com/firebase-id-token",
+   "iss":"https://securetoken.google.com/{{YOUR_FIREBASE_APP_ID}}",
    "name":"Ugly Bob",
    "picture":"https://someurl.com/photo.jpg",
-   "aud":"firebase-id-token",
+   "aud":"{{YOUR_FIREBASE_APP_ID}}",
    "auth_time":1492981192,
    "user_id":"theUserID",
    "sub":"theUserID",
-   "iat":1492981200,
-   "exp":33029000017,
+   "iat":1492981200, // needs to be in the past
+   "exp":33029000017, // needs to be in the future
    "email":"uglybob@emailurl.com",
    "email_verified":true,
    "firebase":{  
@@ -206,34 +217,36 @@ In case you need, here's a example of the payload structure from a Google login 
 
 ```
 
+If you're using this snippet for testing, make sure you check the comments in it.
 
-## Development
-The test suite can be run with `bundle exec rake rspec`
+## Testing
 
+```
+bundle exec rake rspec
+```
 
-The test mode is prepared as preparation for the test.
+### Testing Mode
 
-`FirebaseIdToken.test!`
+Just run:
+```
+FirebaseIdToken.test!
+```
 
-
-By using test mode, the following methods become available.
+By using this mode, the following methods become available.
 
 ```ruby
 # RSA PRIVATE KEY
 FirebaseIdToken::Testing::Certificates.private_key
+
 # CERTIFICATE
 FirebaseIdToken::Testing::Certificates.certificate
 ```
 
-CERTIFICATE will always return the same value and will not communicate to google.
+`certificate` will always return the same value. No external HTTP call is performed.
 
+#### Example: Testing in Rails
 
-### Example
-#### Rails test
-
-Describe the following in test_helper.rb etc.
-
-* test_helper
+Describes the following in `test_helper.rb`.
 
 ```ruby
 class ActiveSupport::TestCase
@@ -243,7 +256,7 @@ class ActiveSupport::TestCase
 end
 ```
 
-* controller_test
+Test example:
 
 ```ruby
 require 'test_helper'
@@ -273,7 +286,6 @@ module Api
   end
 end
 ```
-
 
 ## License
 
